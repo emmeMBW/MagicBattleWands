@@ -1,0 +1,2891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wizard Morse Platform Game</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #333;
+            font-family: Arial, sans-serif;
+        }
+        #gameContainer {
+            position: relative;
+        }
+        canvas {
+            background-color: #87CEEB;
+            border: 2px solid #000;
+            cursor: crosshair;
+        }
+        #ui {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-family: monospace;
+            background-color: rgba(0,0,0,0.5);
+            padding: 5px;
+            border-radius: 5px;
+        }
+        #instructions {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background-color: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+            max-width: 300px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div id="ui">Morse: </div>
+    <div id="instructions">
+        <h3>Wizard Morse Game</h3>
+        <p>Controls: A/D to move, W/Space to jump</p>
+        <p>Aim with mouse, click to cast spells</p>
+        <p>E = dot (.), Q = dash (-) for morse</p>
+        <p>After 2 seconds, morse code converts to a letter</p>
+        <p>Type ".-" (dot-dash) for "Advola!" flying spell</p>
+        <p>With Advola active, cast spells downward to fly up!</p>
+    </div>
+</div>
+
+<script>
+    /* ===== UTILITY.JS - START ===== */
+    // Utility functions for the game
+    const Utility = (function() {
+        return {
+            // Collision detection between two rectangles
+            checkCollision: function(rect1, rect2) {
+                return rect1.x < rect2.x + rect2.width &&
+                       rect1.x + rect1.width > rect2.x &&
+                       rect1.y < rect2.y + rect2.height &&
+                       rect1.y + rect1.height > rect2.y;
+            },
+
+            // Random number generator
+            random: function(min, max) {
+                return Math.floor(Math.random() * (max - min + 1)) + min;
+            },
+
+            // Calculate angle between two points
+            calculateAngle: function(x1, y1, x2, y2) {
+                return Math.atan2(y2 - y1, x2 - x1);
+            },
+
+            // Constants
+            GRAVITY: 0.5,
+            FRICTION: 0.8,
+
+            // Funzione per calcolare la posizione dell'altezza del boss in base al punteggio della zona
+            calculateBossHeight: function(zoneIndex) {
+                return (zoneIndex + 1) * Game.zoneChangeHeight - 500;
+            }
+        };
+    })();
+    /* ===== UTILITY.JS - END ===== */
+
+    /* ===== INPUT.JS - START ===== */
+    // Input handling for keyboard and mouse
+    const Input = (function() {
+        // Private variables
+        let keysDown = {};
+        let mousePos = { x: 0, y: 0 };
+        let mouseDown = false;
+
+        return {
+            // Initialize input handlers
+            init: function(canvas) {
+                // Keyboard events
+                window.addEventListener('keydown', function(e) {
+                    keysDown[e.key.toLowerCase()] = true;
+                });
+
+                window.addEventListener('keyup', function(e) {
+                    keysDown[e.key.toLowerCase()] = false;
+                });
+
+                // Mouse events
+                canvas.addEventListener('mousemove', function(e) {
+                    const rect = canvas.getBoundingClientRect();
+                    mousePos.x = e.clientX - rect.left;
+                    mousePos.y = e.clientY - rect.top;
+                });
+
+                canvas.addEventListener('mousedown', function() {
+                    mouseDown = true;
+                });
+
+                canvas.addEventListener('mouseup', function() {
+                    mouseDown = false;
+                });
+
+                canvas.addEventListener('mouseleave', function() {
+                    mouseDown = false;
+                });
+            },
+
+            // Check if a key is pressed
+            isKeyDown: function(key) {
+                return keysDown[key] === true;
+            },
+
+            // Get mouse position
+            getMousePosition: function() {
+                return { ...mousePos };
+            },
+
+            // Check if mouse is pressed
+            isMouseDown: function() {
+                return mouseDown;
+            },
+
+            // Reset mouse clicked state (for one-time actions)
+            resetMouseDown: function() {
+                mouseDown = false;
+            }
+        };
+    })();
+    /* ===== INPUT.JS - END ===== */
+
+    /* ===== MORSE.JS - START ===== */
+    // Morse code system
+    const Morse = (function() {
+        // Private variables
+        let morseBuffer = [];
+        let morseTimeout = null;
+        const MORSE_TIMEOUT = 2000; // ms
+        const ui = document.getElementById('ui');
+
+        // Morse code mapping
+        const morseToLetter = {
+            '.-': 'A', '-...': 'B', '-.-.': 'C', '-..': 'D', '.': 'E',
+            '..-.': 'F', '--.': 'G', '....': 'H', '..': 'I', '.---': 'J',
+            '-.-': 'K', '.-..': 'L', '--': 'M', '-.': 'N', '---': 'O',
+            '.--.': 'P', '--.-': 'Q', '.-.': 'R', '...': 'S', '-': 'T',
+            '..-': 'U', '...-': 'V', '.--': 'W', '-..-': 'X', '-.--': 'Y',
+            '--..': 'Z'
+        };
+
+        // Special spell mapping
+        const morseToSpell = {
+            '.-': 'Advola!', // A = Advola!
+            '-..': 'Depelle!', // D = Depelle!
+            '...-': 'Ventora, redi celeriter!' // V = Ventora!
+        };
+
+        return {
+            // Initialize morse handlers
+            init: function() {
+                // Set up keyboard listeners for morse
+                window.addEventListener('keydown', function(e) {
+                    if (e.key.toLowerCase() === 'e') {
+                        Morse.addSymbol('.');
+                    } else if (e.key.toLowerCase() === 'q') {
+                        Morse.addSymbol('-');
+                    }
+                });
+            },
+
+            // Add a symbol to the morse buffer
+            addSymbol: function(symbol) {
+                // Clear existing timeout
+                if (morseTimeout) {
+                    clearTimeout(morseTimeout);
+                }
+
+                // Add symbol to buffer
+                morseBuffer.push(symbol);
+
+                // Update display
+                ui.textContent = 'Morse: ' + morseBuffer.join('');
+
+                // Set timeout to process sequence
+                morseTimeout = setTimeout(function() {
+                    Morse.processSequence();
+                }, MORSE_TIMEOUT);
+            },
+
+            // Process the morse sequence and convert to letter
+            processSequence: function() {
+                if (morseBuffer.length === 0) return;
+
+                // Convert buffer to string
+                const morseString = morseBuffer.join('');
+
+                // Look up letter and spell
+                const letter = morseToLetter[morseString] || '?';
+                const spell = morseToSpell[morseString];
+
+                // Check for special spells
+                if (spell) {
+                    // Trigger special spell display
+                    Game.displayMorseSpell(spell, letter);
+
+                    // For Advola spell, activate flying ability
+                    if (spell === 'Advola!') {
+                        Player.activateAdvola();
+                    }
+
+                    // For Depelle spell, activate repulsion ability
+                    if (spell === 'Depelle!') {
+                        Player.activateDepelle();
+                    }
+
+                    // For Ventora spell, activate free flying ability
+                    if (spell === 'Ventora, redi celeriter!') {
+                        Player.activateVentora();
+                    }
+                } else {
+                    // Display normal letter
+                    Game.displayMorseLetter(letter);
+                }
+
+                // Clear buffer
+                morseBuffer = [];
+                ui.textContent = 'Morse: ';
+            }
+        };
+    })();
+    /* ===== MORSE.JS - END ===== */
+
+    /* ===== PLAYER.JS - START ===== */
+    // Player entity and behavior
+    const Player = (function() {
+        return {
+            x: 100,
+            y: 300,
+            width: 40,
+            height: 60,
+            velocityX: 0,
+            velocityY: 0,
+            speed: 5,
+            jumpStrength: 12,
+            onGround: false,
+            facingDirection: 1, // 1 = right, -1 = left
+            color: '#4B0082', // Indigo for wizard
+            hasBroom: false,
+            health: 100,
+            maxHealth: 100,
+            armAngle: 0,
+            castCooldown: 0, // Cooldown timer for casting
+            invulnerable: 0, // Invulnerability frames after taking damage
+            advolaActive: false, // Advola flying spell active
+            advolaDuration: 0, // Remaining frames for Advola spell
+            advolaMaxDuration: 3600, // 1 minute at 60 FPS
+            advolaParticles: [], // Particles for Advola effect
+            depelleActive: false, // Depelle repulsion spell active
+            depelleDuration: 0, // Remaining frames for Depelle spell
+            depelleMaxDuration: 3600, // 1 minute at 60 FPS
+            depelleParticles: [], // Particles for Depelle effect
+            depelleRadius: 150, // Radius of repulsion effect
+            ventoraActive: false, // Ventora flying spell active
+            ventoraDuration: 0, // Remaining frames for Ventora spell
+            ventoraMaxDuration: 7200, // 2 minutes at 60 FPS (60 seconds)
+            ventoraCooldown: 0, // Cooldown timer for Ventora spell
+            ventoraCooldownMax: 7200, // 60 seconds cooldown
+            ventoraParticles: [], // Particles for Ventora effect
+
+            // Update player state
+            update: function() {
+                // Handle movement
+                if (Input.isKeyDown('a')) {
+                    this.velocityX = -this.speed;
+                    this.facingDirection = -1;
+                } else if (Input.isKeyDown('d')) {
+                    this.velocityX = this.speed;
+                    this.facingDirection = 1;
+                } else {
+                    this.velocityX *= Utility.FRICTION;
+                }
+
+                // Handle jumping
+                if ((Input.isKeyDown('w') || Input.isKeyDown(' ')) && this.onGround) {
+                    this.velocityY = -this.jumpStrength;
+                    this.onGround = false;
+                }
+
+                // Check health - if it drops to 0 or below, trigger death
+                if (this.health <= 0) {
+                    Game.playerDeath();
+                    // Reset health after death
+                    this.health = this.maxHealth;
+                    return; // Skip the rest of the update if player just died
+                }
+
+                // Update arm angle to follow mouse
+                const mousePos = Input.getMousePosition();
+                const worldMousePos = {
+                    x: mousePos.x + Camera.x,
+                    y: mousePos.y + Camera.y
+                };
+                this.armAngle = Utility.calculateAngle(
+                    this.x + this.width/2,
+                    this.y + this.height/3,
+                    worldMousePos.x,
+                    worldMousePos.y
+                );
+
+                // Handle spell casting with mouse
+                if (Input.isMouseDown() && this.castCooldown <= 0) {
+                    this.castSpell(worldMousePos);
+                    Input.resetMouseDown(); // Prevent multiple casts
+                }
+
+                // Update cooldown
+                if (this.castCooldown > 0) {
+                    this.castCooldown--;
+                }
+
+                // Update Advola duration if active
+                if (this.advolaActive) {
+                    this.advolaDuration--;
+                    if (this.advolaDuration <= 0) {
+                        this.advolaActive = false;
+                        Game.entities.push({
+                            type: 'notification',
+                            x: this.x,
+                            y: this.y - 40,
+                            text: 'Advola Expired!',
+                            lifespan: 90,
+                            update: function() {
+                                this.y -= 1;
+                                this.lifespan--;
+                                if (this.lifespan <= 0) {
+                                    const index = Game.entities.indexOf(this);
+                                    if (index !== -1) Game.entities.splice(index, 1);
+                                }
+                            },
+                            draw: function(ctx) {
+                                const screenPos = Camera.worldToScreen(this.x, this.y);
+                                ctx.fillStyle = 'yellow';
+                                ctx.font = 'bold 18px Arial';
+                                ctx.textAlign = 'center';
+                                ctx.fillText(this.text, screenPos.x, screenPos.y);
+                            }
+                        });
+                    }
+
+                    // Add Advola particles
+                    if (this.advolaDuration % 5 === 0) {
+                        this.addAdvolaParticle();
+                    }
+                }
+
+                // Update Depelle duration if active
+                if (this.depelleActive) {
+                    this.depelleDuration--;
+                    if (this.depelleDuration <= 0) {
+                        this.depelleActive = false;
+                        Game.entities.push({
+                            type: 'notification',
+                            x: this.x,
+                            y: this.y - 40,
+                            text: 'Depelle Expired!',
+                            lifespan: 90,
+                            update: function() {
+                                this.y -= 1;
+                                this.lifespan--;
+                                if (this.lifespan <= 0) {
+                                    const index = Game.entities.indexOf(this);
+                                    if (index !== -1) Game.entities.splice(index, 1);
+                                }
+                            },
+                            draw: function(ctx) {
+                                const screenPos = Camera.worldToScreen(this.x, this.y);
+                                ctx.fillStyle = 'purple';
+                                ctx.font = 'bold 18px Arial';
+                                ctx.textAlign = 'center';
+                                ctx.fillText(this.text, screenPos.x, screenPos.y);
+                            }
+                        });
+                    }
+
+                    // Add Depelle wave particles
+                    if (this.depelleDuration % 15 === 0) {
+                        this.addDepelleWave();
+                    }
+
+                    // Apply repulsion to enemies
+                    if (this.depelleActive) {
+                        this.applyDepelleRepulsion();
+                    }
+                }
+
+                // Update Advola particles
+                for (let i = this.advolaParticles.length - 1; i >= 0; i--) {
+                    const particle = this.advolaParticles[i];
+                    particle.x += particle.vx;
+                    particle.y += particle.vy;
+                    particle.life--;
+
+                    if (particle.life <= 0) {
+                        this.advolaParticles.splice(i, 1);
+                    }
+                }
+
+                // Update Depelle wave particles
+                for (let i = this.depelleParticles.length - 1; i >= 0; i--) {
+                    const wave = this.depelleParticles[i];
+                    wave.radius += (wave.maxRadius - wave.radius) * 0.1;
+                    wave.life--;
+
+                    if (wave.life <= 0) {
+                        this.depelleParticles.splice(i, 1);
+                    }
+                }
+
+                // Update Ventora duration if active
+                if (this.ventoraActive) {
+                    this.ventoraDuration--;
+                    if (this.ventoraDuration <= 0) {
+                        this.ventoraActive = false;
+                        this.ventoraCooldown = this.ventoraCooldownMax; // Start cooldown when expired
+
+                        Game.entities.push({
+                            type: 'notification',
+                            x: this.x,
+                            y: this.y - 40,
+                            text: 'Ventora Expired!',
+                            lifespan: 90,
+                            update: function() {
+                                this.y -= 1;
+                                this.lifespan--;
+                                if (this.lifespan <= 0) {
+                                    const index = Game.entities.indexOf(this);
+                                    if (index !== -1) Game.entities.splice(index, 1);
+                                }
+                            },
+                            draw: function(ctx) {
+                                const screenPos = Camera.worldToScreen(this.x, this.y);
+                                ctx.fillStyle = '#FF8C00';
+                                ctx.font = 'bold 18px Arial';
+                                ctx.textAlign = 'center';
+                                ctx.fillText(this.text, screenPos.x, screenPos.y);
+                            }
+                        });
+                    }
+
+                    // Add Ventora particles
+                    if (this.ventoraDuration % 3 === 0) {
+                        this.addVentoraParticle();
+                    }
+                }
+
+                // Update Ventora cooldown if needed
+                if (this.ventoraCooldown > 0) {
+                    this.ventoraCooldown--;
+                }
+
+                // Update Ventora particles
+                for (let i = this.ventoraParticles.length - 1; i >= 0; i--) {
+                    const particle = this.ventoraParticles[i];
+                    particle.x += particle.vx;
+                    particle.y += particle.vy;
+                    particle.life--;
+
+                    // Fade out effect
+                    particle.opacity = particle.life / particle.maxLife;
+
+                    if (particle.life <= 0) {
+                        this.ventoraParticles.splice(i, 1);
+                    }
+                }
+
+                // Free flying movement with Ventora
+                if (this.ventoraActive) {
+                    // Reset velocity for precise control
+                    this.velocityX = 0;
+                    this.velocityY = 0;
+
+                    const flySpeed = 7; // Slightly faster than normal movement
+
+                    // 8-direction movement
+                    if (Input.isKeyDown('a') || Input.isKeyDown('arrowleft')) {
+                        this.velocityX = -flySpeed;
+                        this.facingDirection = -1;
+                    }
+                    if (Input.isKeyDown('d') || Input.isKeyDown('arrowright')) {
+                        this.velocityX = flySpeed;
+                        this.facingDirection = 1;
+                    }
+                    if (Input.isKeyDown('w') || Input.isKeyDown('arrowup')) {
+                        this.velocityY = -flySpeed;
+                    }
+                    if (Input.isKeyDown('s') || Input.isKeyDown('arrowdown')) {
+                        this.velocityY = flySpeed;
+                    }
+
+                    // Apply velocity directly - no gravity
+                    this.x += this.velocityX;
+                    this.y += this.velocityY;
+                } else {
+                    // Apply gravity (only if Ventora is not active)
+                    this.velocityY += Utility.GRAVITY;
+
+                    // Apply velocity
+                    this.x += this.velocityX;
+                    this.y += this.velocityY;
+                }
+
+                // Keep player in bounds (only horizontally)
+                if (this.x < 0) this.x = 0;
+                if (this.x + this.width > Game.canvas.width) this.x = Game.canvas.width - this.width;
+                // No upper bound check, allowing player to go up indefinitely
+                // Only check bottom bounds
+                if (this.y + this.height > Game.canvas.height) {
+                    this.y = Game.canvas.height - this.height;
+                    this.velocityY = 0;
+                    this.onGround = true;
+                }
+            },
+
+            // Activate Advola flying spell
+            activateAdvola: function() {
+                this.advolaActive = true;
+                this.advolaDuration = this.advolaMaxDuration;
+
+                // Create notification
+                Game.entities.push({
+                    type: 'notification',
+                    x: this.x,
+                    y: this.y - 40,
+                    text: 'ADVOLA ACTIVATED!',
+                    lifespan: 120,
+                    update: function() {
+                        this.y -= 1;
+                        this.lifespan--;
+                        if (this.lifespan <= 0) {
+                            const index = Game.entities.indexOf(this);
+                            if (index !== -1) Game.entities.splice(index, 1);
+                        }
+                    },
+                    draw: function(ctx) {
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+                        ctx.fillStyle = '#00FFFF';
+                        ctx.font = 'bold 20px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(this.text, screenPos.x, screenPos.y);
+                    }
+                });
+            },
+
+            // Add particle effect for Advola spell
+            addAdvolaParticle: function() {
+                for (let i = 0; i < 3; i++) {
+                    this.advolaParticles.push({
+                        x: this.x + this.width/2 + (Math.random() * 20 - 10),
+                        y: this.y + this.height - 5,
+                        vx: Math.random() * 2 - 1,
+                        vy: Math.random() * 2 + 1,
+                        size: Math.random() * 5 + 2,
+                        life: Math.random() * 20 + 10,
+                        color: `hsl(${180 + Math.random() * 60}, 100%, 50%)`
+                    });
+                }
+            },
+
+            // Activate Depelle repulsion spell
+            activateDepelle: function() {
+                this.depelleActive = true;
+                this.depelleDuration = this.depelleMaxDuration;
+                this.depelleParticles = [];
+
+                // Create notification
+                Game.entities.push({
+                    type: 'notification',
+                    x: this.x,
+                    y: this.y - 40,
+                    text: 'DEPELLE ACTIVATED!',
+                    lifespan: 120,
+                    update: function() {
+                        this.y -= 1;
+                        this.lifespan--;
+                        if (this.lifespan <= 0) {
+                            const index = Game.entities.indexOf(this);
+                            if (index !== -1) Game.entities.splice(index, 1);
+                        }
+                    },
+                    draw: function(ctx) {
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+                        ctx.fillStyle = '#AA00FF';
+                        ctx.font = 'bold 20px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(this.text, screenPos.x, screenPos.y);
+                    }
+                });
+
+                // Create initial wave
+                this.addDepelleWave();
+            },
+
+            // Add wave effect for Depelle spell
+            addDepelleWave: function() {
+                this.depelleParticles.push({
+                    x: this.x + this.width/2,
+                    y: this.y + this.height/2,
+                    radius: 10,
+                    maxRadius: this.depelleRadius,
+                    life: 60,
+                    color: 'rgba(170, 0, 255, 0.4)'
+                });
+            },
+
+            // Activate Ventora free flying spell
+            activateVentora: function() {
+                // Check if spell is on cooldown
+                if (this.ventoraCooldown > 0) {
+                    // Create notification for cooldown
+                    Game.entities.push({
+                        type: 'notification',
+                        x: this.x,
+                        y: this.y - 40,
+                        text: 'VENTORA COOLING DOWN!',
+                        lifespan: 90,
+                        update: function() {
+                            this.y -= 1;
+                            this.lifespan--;
+                            if (this.lifespan <= 0) {
+                                const index = Game.entities.indexOf(this);
+                                if (index !== -1) Game.entities.splice(index, 1);
+                            }
+                        },
+                        draw: function(ctx) {
+                            const screenPos = Camera.worldToScreen(this.x, this.y);
+                            ctx.fillStyle = '#FF8C00';
+                            ctx.font = 'bold 20px Arial';
+                            ctx.textAlign = 'center';
+                            ctx.fillText(this.text, screenPos.x, screenPos.y);
+                        }
+                    });
+                    return;
+                }
+
+                this.ventoraActive = true;
+                this.ventoraDuration = this.ventoraMaxDuration;
+                this.ventoraParticles = [];
+
+                // Create notification
+                Game.entities.push({
+                    type: 'notification',
+                    x: this.x,
+                    y: this.y - 40,
+                    text: 'VENTORA ACTIVATED!',
+                    lifespan: 120,
+                    update: function() {
+                        this.y -= 1;
+                        this.lifespan--;
+                        if (this.lifespan <= 0) {
+                            const index = Game.entities.indexOf(this);
+                            if (index !== -1) Game.entities.splice(index, 1);
+                        }
+                    },
+                    draw: function(ctx) {
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+                        ctx.fillStyle = '#FF8C00';
+                        ctx.font = 'bold 20px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(this.text, screenPos.x, screenPos.y);
+                    }
+                });
+            },
+
+            // Add particle effect for Ventora spell
+            addVentoraParticle: function() {
+                // Create more particles when moving
+                const particleCount = (Math.abs(this.velocityX) > 0.1 || Math.abs(this.velocityY) > 0.1) ? 5 : 2;
+
+                for (let i = 0; i < particleCount; i++) {
+                    // Position particles below the player (like broom trail)
+                    const offsetX = Math.random() * this.width - this.width/2;
+
+                    this.ventoraParticles.push({
+                        x: this.x + this.width/2 + offsetX,
+                        y: this.y + this.height,
+                        vx: Math.random() * 2 - 1, // Random horizontal spread
+                        vy: Math.random() * 3 + 2, // Downward moving particles
+                        size: Math.random() * 6 + 3,
+                        maxLife: Math.random() * 30 + 15,
+                        life: Math.random() * 30 + 15,
+                        opacity: 1,
+                        // Orange to red-orange flame colors
+                        color: `hsl(${25 + Math.random() * 20}, 100%, ${50 + Math.random() * 30}%)`
+                    });
+                }
+            },
+
+            // Apply repulsion effect to enemies
+            applyDepelleRepulsion: function() {
+                Game.entities.forEach(entity => {
+                    if (entity.type === 'enemy') {
+                        const dx = entity.x + entity.width/2 - (this.x + this.width/2);
+                        const dy = entity.y + entity.height/2 - (this.y + this.height/2);
+                        const distance = Math.sqrt(dx*dx + dy*dy);
+
+                        if (distance < this.depelleRadius) {
+                            // Calcola un impulso di repulsione molto più forte
+                            // Forza minima: 8, che aumenta fino a 15 quando il nemico è vicino
+                            const repulsionStrength = 8 + (15 - 8) * (1 - distance / this.depelleRadius);
+
+                            // Normalizza la direzione
+                            const angle = Math.atan2(dy, dx);
+                            const nx = Math.cos(angle);
+                            const ny = Math.sin(angle);
+
+                            // Applica la repulsione come un impulso improvviso
+                            if (!entity.behavior || entity.behavior !== 'fly') {
+                                // Nemici a terra: principalmente spinta orizzontale con leggera spinta verso l'alto
+                                entity.x += nx * repulsionStrength;
+                                entity.velocityX = nx * repulsionStrength * 1.5; // Dà un impulso alla velocità
+                                entity.velocityY = -5; // Piccolo salto
+
+                                // Aggiorna punto di pattugliamento
+                                entity.startX = entity.x;
+                                entity.direction *= -1; // Inverte direzione
+                            } else {
+                                // Nemici volanti: spinta completa in tutte le direzioni
+                                entity.x += nx * repulsionStrength * 1.5;
+                                entity.y += ny * repulsionStrength * 1.5;
+
+                                // Aggiungi anche un impulso alla velocità per i nemici volanti
+                                if (entity.velocityX !== undefined) {
+                                    entity.velocityX = nx * repulsionStrength * 2;
+                                    entity.velocityY = ny * repulsionStrength * 2;
+                                }
+                            }
+
+                            // Effetto visivo dell'impatto
+                            Game.entities.push({
+                                type: 'particle',
+                                x: entity.x + entity.width/2,
+                                y: entity.y + entity.height/2,
+                                size: 5,
+                                color: '#AA00FF',
+                                lifespan: 20,
+                                update: function() {
+                                    this.size *= 0.9;
+                                    this.lifespan--;
+                                    if (this.lifespan <= 0) {
+                                        const index = Game.entities.indexOf(this);
+                                        if (index !== -1) Game.entities.splice(index, 1);
+                                    }
+                                },
+                                draw: function(ctx) {
+                                    const screenPos = Camera.worldToScreen(this.x, this.y);
+                                    ctx.fillStyle = this.color;
+                                    ctx.beginPath();
+                                    ctx.arc(screenPos.x, screenPos.y, this.size * 3, 0, Math.PI*2);
+                                    ctx.fill();
+                                }
+                            });
+                        }
+                    }
+                });
+            },
+
+            // Cast a spell towards target position
+            castSpell: function(targetPos) {
+                // Calculate direction vector
+                const startX = this.x + this.width/2 + Math.cos(this.armAngle) * this.width/2;
+                const startY = this.y + this.height/3 + Math.sin(this.armAngle) * this.width/2;
+
+                const angle = Utility.calculateAngle(startX, startY, targetPos.x, targetPos.y);
+
+                // Check if this is a downward cast while Advola is active
+                const isDownwardCast = angle > Math.PI/4 && angle < 3*Math.PI/4;
+
+                if (this.advolaActive && isDownwardCast) {
+                    // Apply upward propulsion when casting downward with Advola active
+                    this.velocityY -= 8; // Stronger upward boost (increased from 5 to 8)
+
+                    // Add more particles for thrust effect
+                    for (let i = 0; i < 10; i++) {
+                        this.advolaParticles.push({
+                            x: startX + (Math.random() * 20 - 10),
+                            y: startY + (Math.random() * 10),
+                            vx: Math.random() * 4 - 2,
+                            vy: Math.random() * 3 + 2, // Downward particles for thrust
+                            size: Math.random() * 6 + 3,
+                            life: Math.random() * 30 + 20,
+                            color: `hsl(${180 + Math.random() * 60}, 100%, ${50 + Math.random() * 50}%)`
+                        });
+                    }
+                }
+
+                Game.entities.push({
+                    type: 'spell',
+                    x: startX,
+                    y: startY,
+                    width: 20,
+                    height: 20,
+                    velocityX: Math.cos(angle) * 8,
+                    velocityY: Math.sin(angle) * 8,
+                    lifespan: 90, // frames
+                    color: this.advolaActive && isDownwardCast ? '#00FFAA' : '#00FFFF', // Different color for Advola propulsion
+                    damage: 10,
+
+                    update: function() {
+                        this.x += this.velocityX;
+                        this.y += this.velocityY;
+
+                        // Check enemy collisions
+                        Game.entities.forEach(entity => {
+                            if (entity.type === 'enemy' && Utility.checkCollision(this, entity)) {
+                                entity.health -= this.damage;
+                                this.lifespan = 0;
+                            }
+                        });
+
+                        // Removed platform collision check so spells pass through platforms
+
+                        // Reduce lifespan
+                        this.lifespan--;
+                        if (this.lifespan <= 0) {
+                            const index = Game.entities.indexOf(this);
+                            if (index !== -1) Game.entities.splice(index, 1);
+                        }
+                    },
+
+                    draw: function(ctx) {
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+                        ctx.fillStyle = this.color;
+                        ctx.beginPath();
+                        ctx.arc(screenPos.x, screenPos.y, this.width/2, 0, Math.PI*2);
+                        ctx.fill();
+                    }
+                });
+
+                // Set cooldown
+                this.castCooldown = 10; // 10 frames cooldown (reduced from 15 to cast more frequently)
+            },
+
+            // Handle platform collisions
+            checkPlatformCollisions: function() {
+                this.onGround = false;
+
+                Game.platforms.forEach(platform => {
+                    if (Utility.checkCollision(this, platform)) {
+                        // Check if this is a one-way platform
+                        if (platform.oneWay) {
+                            // Only collide if player is falling and was above the platform
+                            const wasAbove = this.y + this.height - this.velocityY <= platform.y + 5;
+
+                            if (wasAbove && this.velocityY >= 0) {
+                                // Landing on one-way platform
+                                this.y = platform.y - this.height;
+                                this.velocityY = 0;
+                                this.onGround = true;
+                            }
+                            // If coming from below or sides, pass through
+                        } else {
+                            // Regular platform (non-one-way) - full collision
+                            // Improved collision detection
+                            const wasAbove = this.y + this.height - this.velocityY <= platform.y + 10;
+
+                            if (wasAbove) {
+                                // Top collision - landing on platform
+                                this.y = platform.y - this.height;
+                                this.velocityY = 0;
+                                this.onGround = true;
+                            } else {
+                                // Determine if side collision or bottom collision
+                                const fromLeft = this.x + this.width - this.velocityX <= platform.x + 5;
+                                const fromRight = this.x - this.velocityX >= platform.x + platform.width - 5;
+
+                                if (fromLeft) {
+                                    // Left side collision
+                                    this.x = platform.x - this.width;
+                                    // Only reset horizontal velocity if moving toward platform
+                                    if (this.velocityX > 0) this.velocityX = 0;
+                                } else if (fromRight) {
+                                    // Right side collision
+                                    this.x = platform.x + platform.width;
+                                    // Only reset horizontal velocity if moving toward platform
+                                    if (this.velocityX < 0) this.velocityX = 0;
+                                } else {
+                                    // Bottom collision (hitting platform from below)
+                                    this.y = platform.y + platform.height;
+                                    if (this.velocityY < 0) this.velocityY = 0;
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+
+            // Draw player character
+            draw: function(ctx) {
+                // Convert world coordinates to screen coordinates
+                const screenPos = Camera.worldToScreen(this.x, this.y);
+
+                // Flash if invulnerable
+                if (this.invulnerable > 0 && Math.floor(this.invulnerable / 5) % 2 === 0) {
+                    this.invulnerable--;
+                    return; // Skip drawing to create flashing effect
+                } else if (this.invulnerable > 0) {
+                    this.invulnerable--;
+                }
+
+                // Draw Advola particles
+                this.advolaParticles.forEach(particle => {
+                    const particlePos = Camera.worldToScreen(particle.x, particle.y);
+                    ctx.fillStyle = particle.color;
+                    ctx.globalAlpha = particle.life / 30;
+                    ctx.beginPath();
+                    ctx.arc(particlePos.x, particlePos.y, particle.size, 0, Math.PI*2);
+                    ctx.fill();
+                    ctx.globalAlpha = 1;
+                });
+
+                // Draw Depelle wave particles
+                this.depelleParticles.forEach(wave => {
+                    const wavePos = Camera.worldToScreen(wave.x, wave.y);
+                    ctx.strokeStyle = wave.color;
+                    ctx.lineWidth = 3;
+                    ctx.globalAlpha = wave.life / 60;
+                    ctx.beginPath();
+                    ctx.arc(wavePos.x, wavePos.y, wave.radius, 0, Math.PI*2);
+                    ctx.stroke();
+                    ctx.globalAlpha = 1;
+                });
+
+                // Draw Ventora particles (flame effect)
+                this.ventoraParticles.forEach(particle => {
+                    const particlePos = Camera.worldToScreen(particle.x, particle.y);
+                    ctx.fillStyle = particle.color;
+                    ctx.globalAlpha = particle.opacity;
+                    ctx.beginPath();
+                    ctx.arc(particlePos.x, particlePos.y, particle.size, 0, Math.PI*2);
+                    ctx.fill();
+                    ctx.globalAlpha = 1;
+                });
+
+                // Draw magic broomstick if Ventora is active
+                if (this.ventoraActive) {
+                    // Draw broomstick under player
+                    ctx.save();
+                    const broomCenterX = screenPos.x + this.width/2;
+                    const broomCenterY = screenPos.y + this.height;
+
+                    // Draw broomstick handle
+                    ctx.fillStyle = '#8B4513'; // SaddleBrown
+                    ctx.fillRect(broomCenterX - 25, broomCenterY, 50, 6);
+
+                    // Draw bristles
+                    ctx.fillStyle = '#DAA520'; // GoldenRod
+                    ctx.beginPath();
+                    ctx.moveTo(broomCenterX - 25, broomCenterY + 3);
+                    ctx.lineTo(broomCenterX - 40, broomCenterY + 15);
+                    ctx.lineTo(broomCenterX - 25, broomCenterY + 10);
+                    ctx.fill();
+
+                    ctx.beginPath();
+                    ctx.moveTo(broomCenterX - 15, broomCenterY + 3);
+                    ctx.lineTo(broomCenterX - 30, broomCenterY + 18);
+                    ctx.lineTo(broomCenterX - 15, broomCenterY + 8);
+                    ctx.fill();
+
+                    ctx.restore();
+                }
+
+                // Draw legs
+                ctx.fillStyle = '#301934'; // Darker purple for legs
+                ctx.fillRect(screenPos.x + this.width/4, screenPos.y + this.height/2, this.width/5, this.height/2);
+                ctx.fillRect(screenPos.x + this.width*3/5, screenPos.y + this.height/2, this.width/5, this.height/2);
+
+                // Draw body
+                ctx.fillStyle = this.advolaActive ? '#9370DB' : this.color; // Lighter purple when Advola is active
+                ctx.fillRect(screenPos.x, screenPos.y, this.width, this.height/2);
+
+                // Draw left arm
+                ctx.fillStyle = '#301934';
+                ctx.fillRect(screenPos.x - 5, screenPos.y + this.height/4, this.width/5, this.height/4);
+
+                // Draw right arm (follows mouse)
+                ctx.save();
+                ctx.translate(screenPos.x + this.width/2, screenPos.y + this.height/3);
+                ctx.rotate(this.armAngle);
+
+                // Draw arm
+                ctx.fillStyle = '#301934';
+                ctx.fillRect(0, -this.height/10, this.width/2, this.height/5);
+
+                // Draw wand
+                ctx.fillStyle = this.advolaActive ? '#00CED1' : '#8B4513'; // Turquoise wand when Advola is active
+                ctx.fillRect(this.width/2, -this.height/15, this.width/2, this.height/10);
+
+                // Draw wand tip glow when Advola is active
+                if (this.advolaActive) {
+                    ctx.fillStyle = 'rgba(0, 255, 255, 0.5)';
+                    ctx.beginPath();
+                    ctx.arc(this.width, -this.height/30, this.width/5, 0, Math.PI*2);
+                    ctx.fill();
+                }
+
+                ctx.restore();
+
+                // Draw head
+                ctx.fillStyle = this.advolaActive ? '#9370DB' : this.color;
+                ctx.beginPath();
+                ctx.arc(screenPos.x + this.width/2, screenPos.y, this.width/3, 0, Math.PI*2);
+                ctx.fill();
+
+                // Draw hat
+                ctx.fillStyle = this.advolaActive ? '#4169E1' : '#000080'; // Royal Blue hat when Advola is active
+                ctx.beginPath();
+                ctx.moveTo(screenPos.x + this.width/2, screenPos.y - this.width/2);
+                ctx.lineTo(screenPos.x + this.width/4, screenPos.y - this.width/6);
+                ctx.lineTo(screenPos.x + this.width*3/4, screenPos.y - this.width/6);
+                ctx.fill();
+
+                // Draw eyes
+                ctx.fillStyle = 'white';
+                ctx.beginPath();
+                ctx.arc(screenPos.x + this.width/3, screenPos.y, 5, 0, Math.PI*2);
+                ctx.arc(screenPos.x + this.width*2/3, screenPos.y, 5, 0, Math.PI*2);
+                ctx.fill();
+
+                // Draw health bar
+                ctx.fillStyle = 'red';
+                ctx.fillRect(screenPos.x, screenPos.y - 15, this.width, 5);
+
+                ctx.fillStyle = 'green';
+                ctx.fillRect(screenPos.x, screenPos.y - 15, (this.health / this.maxHealth) * this.width, 5);
+
+                // Draw Advola duration bar if active
+                if (this.advolaActive) {
+                    const barWidth = this.width * 1.5;
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                    ctx.fillRect(screenPos.x - this.width/4, screenPos.y - 25, barWidth, 5);
+
+                    ctx.fillStyle = 'cyan';
+                    ctx.fillRect(screenPos.x - this.width/4, screenPos.y - 25,
+                                 (this.advolaDuration / this.advolaMaxDuration) * barWidth, 5);
+                }
+
+                // Draw Depelle duration bar if active
+                if (this.depelleActive) {
+                    const barWidth = this.width * 1.5;
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                    ctx.fillRect(screenPos.x - this.width/4, screenPos.y - 33, barWidth, 5);
+
+                    ctx.fillStyle = 'purple';
+                    ctx.fillRect(screenPos.x - this.width/4, screenPos.y - 33,
+                                 (this.depelleDuration / this.depelleMaxDuration) * barWidth, 5);
+
+                    // Draw repulsion radius indicator (thin circle)
+                    if (this.depelleParticles.length === 0) {  // Only when no wave particles
+                        ctx.strokeStyle = 'rgba(170, 0, 255, 0.2)';
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.arc(screenPos.x + this.width/2, screenPos.y + this.height/2, this.depelleRadius, 0, Math.PI*2);
+                        ctx.stroke();
+                    }
+                }
+
+                // Draw Ventora duration bar if active
+                if (this.ventoraActive) {
+                    const barWidth = this.width * 1.5;
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                    ctx.fillRect(screenPos.x - this.width/4, screenPos.y - 41, barWidth, 5);
+
+                    ctx.fillStyle = '#FF8C00'; // Orange
+                    ctx.fillRect(screenPos.x - this.width/4, screenPos.y - 41,
+                                 (this.ventoraDuration / this.ventoraMaxDuration) * barWidth, 5);
+                }
+
+                // Draw Ventora cooldown bar if on cooldown
+                if (this.ventoraCooldown > 0 && !this.ventoraActive) {
+                    const barWidth = this.width * 1.5;
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                    ctx.fillRect(screenPos.x - this.width/4, screenPos.y - 41, barWidth, 5);
+
+                    ctx.fillStyle = '#A0522D'; // Sienna (darker brown)
+                    ctx.fillRect(screenPos.x - this.width/4, screenPos.y - 41,
+                                 (1 - this.ventoraCooldown / this.ventoraCooldownMax) * barWidth, 5);
+
+                    // Small "cooling" text
+                    ctx.fillStyle = '#FFA500';
+                    ctx.font = '10px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText("cooling", screenPos.x + this.width/2, screenPos.y - 43);
+                }
+            }
+        };
+    })();
+    /* ===== PLAYER.JS - END ===== */
+
+    /* ===== ENEMIES.JS - START ===== */
+    // Enemy entities and behavior
+    const Enemies = (function() {
+        return {
+            // Create a basic patrolling enemy
+            createBasicEnemy: function(x, y) {
+                return {
+                    type: 'enemy',
+                    x: x,
+                    y: y,
+                    width: 40,
+                    height: 40,
+                    velocityX: 2,
+                    velocityY: 0,
+                    health: 30,
+                    maxHealth: 30,
+                    color: '#FF0000', // Red
+                    direction: 1,
+                    patrolDistance: 100,
+                    startX: x,
+
+                    update: function() {
+                        // Simple patrol behavior
+                        if (Math.abs(this.x - this.startX) > this.patrolDistance) {
+                            this.direction *= -1;
+                        }
+
+                        this.velocityX = this.direction * 2;
+
+                        // Apply gravity
+                        this.velocityY += Utility.GRAVITY;
+
+                        // Apply velocity
+                        this.x += this.velocityX;
+                        this.y += this.velocityY;
+
+                        // Check platform collisions
+                        let onGround = false;
+                        Game.platforms.forEach(platform => {
+                            if (Utility.checkCollision(this, platform)) {
+                                // Handle collision based on direction
+                                const fromTop = this.y + this.height - this.velocityY <= platform.y;
+
+                                if (fromTop) {
+                                    this.y = platform.y - this.height;
+                                    this.velocityY = 0;
+                                    onGround = true;
+                                } else {
+                                    // Side or bottom collision
+                                    if (this.x + this.width/2 < platform.x + platform.width/2) {
+                                        // Left side
+                                        this.x = platform.x - this.width;
+                                        this.direction = -1;
+                                    } else {
+                                        // Right side
+                                        this.x = platform.x + platform.width;
+                                        this.direction = 1;
+                                    }
+                                    this.velocityX = 0;
+                                }
+                            }
+                        });
+
+                        // Keep enemy in bounds
+                        if (this.x < 0) {
+                            this.x = 0;
+                            this.direction = 1;
+                        }
+                        if (this.x + this.width > Game.canvas.width) {
+                            this.x = Game.canvas.width - this.width;
+                            this.direction = -1;
+                        }
+
+                        // Check for player collision
+                        if (Utility.checkCollision(this, Player)) {
+                            // Only apply damage if player is not invulnerable
+                            if (Player.invulnerable <= 0) {
+                                Player.health -= 0.5; // Reduce player health
+
+                                // Knockback player
+                                const knockbackDirection = Player.x < this.x ? -1 : 1;
+                                Player.velocityX = knockbackDirection * 5;
+                                Player.velocityY = -5;
+                            }
+                        }
+
+                        // Check if enemy is dead
+                        if (this.health <= 0) {
+                            const index = Game.entities.indexOf(this);
+                            if (index !== -1) Game.entities.splice(index, 1);
+
+                            // Chance to spawn owl
+                            if (Math.random() < 0.3) {
+                                Game.spawnOwl();
+                            }
+                        }
+                    },
+
+                    draw: function(ctx) {
+                        // Convert to screen coordinates
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+
+                        // Skip drawing if not visible on screen
+                        if (!Camera.isVisible(this)) {
+                            return;
+                        }
+
+                        // Draw enemy
+                        ctx.fillStyle = this.color;
+                        ctx.fillRect(screenPos.x, screenPos.y, this.width, this.height);
+
+                        // Draw eyes
+                        ctx.fillStyle = 'white';
+                        ctx.fillRect(screenPos.x + this.width/4, screenPos.y + this.height/4, 8, 8);
+                        ctx.fillRect(screenPos.x + this.width*2/3, screenPos.y + this.height/4, 8, 8);
+
+                        // Draw health bar
+                        ctx.fillStyle = 'red';
+                        ctx.fillRect(screenPos.x, screenPos.y - 10, this.width, 5);
+
+                        ctx.fillStyle = 'green';
+                        ctx.fillRect(screenPos.x, screenPos.y - 10, (this.health / this.maxHealth) * this.width, 5);
+                    }
+                };
+            },
+
+            // Create a flying enemy
+            createFlyingEnemy: function(x, y) {
+                return {
+                    type: 'enemy',
+                    x: x,
+                    y: y,
+                    width: 35,
+                    height: 35,
+                    velocityX: 0,
+                    velocityY: 0,
+                    health: 20,
+                    maxHealth: 20,
+                    color: '#8A2BE2', // BlueViolet
+                    behavior: 'fly',
+
+                    update: function() {
+                        // Move towards player
+                        const dx = Player.x - this.x;
+                        const dy = Player.y - this.y;
+                        const distance = Math.sqrt(dx*dx + dy*dy);
+
+                        if (distance > 10) {
+                            this.velocityX = (dx / distance) * 2;
+                            this.velocityY = (dy / distance) * 2;
+                        } else {
+                            this.velocityX = 0;
+                            this.velocityY = 0;
+                        }
+
+                        // Apply velocity
+                        this.x += this.velocityX;
+                        this.y += this.velocityY;
+
+                        // Keep enemy in bounds
+                        if (this.x < 0) this.x = 0;
+                        if (this.x + this.width > Game.canvas.width) this.x = Game.canvas.width - this.width;
+                        if (this.y < 0) this.y = 0;
+                        if (this.y + this.height > Game.canvas.height) this.y = Game.canvas.height - this.height;
+
+                        // Check for player collision
+                        if (Utility.checkCollision(this, Player)) {
+                            // Only apply damage if player is not invulnerable
+                            if (Player.invulnerable <= 0) {
+                                Player.health -= 0.3; // Reduce player health
+                            }
+                        }
+
+                        // Check if enemy is dead
+                        if (this.health <= 0) {
+                            const index = Game.entities.indexOf(this);
+                            if (index !== -1) Game.entities.splice(index, 1);
+
+                            // Add points and count kill
+                            Game.addEnemyPoints(this);
+                        }
+                    },
+
+                    draw: function(ctx) {
+                        // Convert to screen coordinates
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+
+                        // Skip drawing if not visible on screen
+                        if (!Camera.isVisible(this)) {
+                            return;
+                        }
+
+                        // Draw flying enemy
+                        ctx.fillStyle = this.color;
+                        ctx.beginPath();
+                        ctx.arc(screenPos.x + this.width/2, screenPos.y + this.height/2, this.width/2, 0, Math.PI*2);
+                        ctx.fill();
+
+                        // Draw wings
+                        ctx.fillStyle = '#4B0082'; // Indigo
+                        ctx.beginPath();
+                        ctx.ellipse(screenPos.x + this.width/2 - this.width/2, screenPos.y + this.height/2, this.width/4, this.height/2, 0, 0, Math.PI*2);
+                        ctx.fill();
+
+                        ctx.beginPath();
+                        ctx.ellipse(screenPos.x + this.width/2 + this.width/2, screenPos.y + this.height/2, this.width/4, this.height/2, 0, 0, Math.PI*2);
+                        ctx.fill();
+
+                        // Draw health bar
+                        ctx.fillStyle = 'red';
+                        ctx.fillRect(screenPos.x, screenPos.y - 10, this.width, 5);
+
+                        ctx.fillStyle = 'green';
+                        ctx.fillRect(screenPos.x, screenPos.y - 10, (this.health / this.maxHealth) * this.width, 5);
+                    }
+                };
+            }
+        };
+    })();
+    /* ===== ENEMIES.JS - END ===== */
+
+    /* ===== OWL.JS - START ===== */
+    // Owl entity that delivers power-ups
+    const Owl = (function() {
+        return {
+            // Create owl entity
+            create: function(x, y) {
+                return {
+                    type: 'owl',
+                    x: x,
+                    y: y,
+                    width: 50,
+                    height: 40,
+                    velocityX: 3,
+                    velocityY: 0,
+                    state: 'approaching', // approaching, hovering, leaving
+                    hoverTimer: 200, // frames
+                    powerup: Math.random() < 0.3 ? 'broom' : 'wand',
+
+                    update: function() {
+                        if (this.state === 'approaching') {
+                            // Move towards player
+                            if (Math.abs(this.x - Player.x) < 50) {
+                                this.state = 'hovering';
+                            }
+
+                            this.x += this.velocityX;
+                            this.y = 100 + Math.sin(Date.now() / 200) * 20; // Gentle bobbing
+                        } else if (this.state === 'hovering') {
+                            // Hover above player
+                            this.x += (Player.x - this.x) * 0.05;
+                            this.y = 100 + Math.sin(Date.now() / 200) * 20; // Gentle bobbing
+
+                            // Countdown hover timer
+                            this.hoverTimer--;
+                            if (this.hoverTimer <= 0) {
+                                this.state = 'leaving';
+                            }
+
+                            // Check if player touches owl
+                            if (Utility.checkCollision(this, Player)) {
+                                // Give powerup
+                                if (this.powerup === 'broom') {
+                                    Player.hasBroom = true;
+
+                                    // Create notification
+                                    Game.entities.push({
+                                        type: 'notification',
+                                        x: this.x,
+                                        y: this.y - 20,
+                                        text: 'Flying Broom!',
+                                        lifespan: 90, // frames
+
+                                        update: function() {
+                                            this.y -= 1;
+                                            this.lifespan--;
+                                            if (this.lifespan <= 0) {
+                                                const index = Game.entities.indexOf(this);
+                                                if (index !== -1) Game.entities.splice(index, 1);
+                                            }
+                                        },
+
+                                        draw: function(ctx) {
+                                            ctx.fillStyle = 'white';
+                                            ctx.font = 'bold 16px Arial';
+                                            ctx.textAlign = 'center';
+                                            ctx.fillText(this.text, this.x, this.y);
+                                        }
+                                    });
+                                }
+
+                                this.state = 'leaving';
+                            }
+                        } else if (this.state === 'leaving') {
+                            // Fly away
+                            this.velocityX = 5;
+                            this.velocityY = -1;
+
+                            this.x += this.velocityX;
+                            this.y += this.velocityY;
+
+                            // Remove if out of bounds
+                            if (this.x > Game.canvas.width + 100) {
+                                const index = Game.entities.indexOf(this);
+                                if (index !== -1) Game.entities.splice(index, 1);
+                            }
+                        }
+                    },
+
+                    draw: function(ctx) {
+                        // Convert to screen coordinates
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+
+                        // Skip drawing if not visible on screen
+                        if (!Camera.isVisible(this)) {
+                            return;
+                        }
+
+                        // Draw owl
+                        ctx.fillStyle = '#A52A2A'; // Brown
+                        ctx.fillRect(screenPos.x, screenPos.y, this.width, this.height);
+
+                        // Draw wings
+                        ctx.fillStyle = '#D2691E'; // Chocolate
+                        ctx.fillRect(screenPos.x - 15, screenPos.y + 10, 15, 20);
+                        ctx.fillRect(screenPos.x + this.width, screenPos.y + 10, 15, 20);
+
+                        // Draw eyes
+                        ctx.fillStyle = 'yellow';
+                        ctx.beginPath();
+                        ctx.arc(screenPos.x + 15, screenPos.y + 15, 5, 0, Math.PI*2);
+                        ctx.arc(screenPos.x + 35, screenPos.y + 15, 5, 0, Math.PI*2);
+                        ctx.fill();
+
+                        // Draw powerup above owl
+                        if (this.powerup === 'broom') {
+                            // Draw broom
+                            ctx.fillStyle = '#8B4513'; // SaddleBrown
+                            ctx.fillRect(screenPos.x + 15, screenPos.y - 15, 20, 5);
+
+                            ctx.fillStyle = '#DAA520'; // GoldenRod
+                            ctx.beginPath();
+                            ctx.moveTo(screenPos.x + 35, screenPos.y - 20);
+                            ctx.lineTo(screenPos.x + 45, screenPos.y - 10);
+                            ctx.lineTo(screenPos.x + 35, screenPos.y);
+                            ctx.fill();
+                        }
+                    }
+                };
+            }
+        };
+    })();
+    /* ===== OWL.JS - END ===== */
+
+    /* ===== CAMERA.JS - START ===== */
+    // Camera system for following player
+    const Camera = (function() {
+        return {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+            followingY: true,
+            targetY: 0,
+            smoothFactor: 0.1, // for smooth camera movement
+
+            // Update camera position to follow player
+            update: function() {
+                // Follow player horizontally with a slight offset based on movement direction
+                const targetX = Player.x + Player.width / 2 - this.width / 2 + (Player.velocityX * 30);
+                this.x += (targetX - this.x) * 0.05; // Smooth horizontal follow
+
+                // Keep player at middle of screen vertically
+                this.targetY = Player.y + Player.height / 2 - this.height / 2;
+
+                // Smooth camera movement
+                this.y += (this.targetY - this.y) * this.smoothFactor;
+
+                // Clamp camera to valid bounds (only horizontally)
+                if (this.x < 0) this.x = 0;
+                // Removed vertical clamping to allow camera to follow player upwards indefinitely
+            },
+
+            // Convert world coordinates to screen coordinates
+            worldToScreen: function(x, y) {
+                return {
+                    x: x - this.x,
+                    y: y - this.y
+                };
+            },
+
+            // Convert screen coordinates to world coordinates
+            screenToWorld: function(x, y) {
+                return {
+                    x: x + this.x,
+                    y: y + this.y
+                };
+            },
+
+            // Check if an object is visible on screen
+            isVisible: function(obj) {
+                return obj.x + obj.width > this.x &&
+                       obj.x < this.x + this.width &&
+                       obj.y + obj.height > this.y &&
+                       obj.y < this.y + this.height;
+            },
+
+            // Check if an object is near the visible area (for optimization)
+            isNearView: function(obj, padding = 300) {
+                return obj.x + obj.width > this.x - padding &&
+                       obj.x < this.x + this.width + padding &&
+                       obj.y + obj.height > this.y - padding &&
+                       obj.y < this.y + this.height + padding;
+            }
+        };
+    })();
+    /* ===== CAMERA.JS - END ===== */
+
+    /* ===== PLATFORM_GENERATOR.JS - START ===== */
+    // Procedural platform generation
+    const PlatformGenerator = (function() {
+        // Private variables
+        let highestPlatform = 0;
+        let lastGeneratedY = 0;
+        const platformMinWidth = 70;
+        const platformMaxWidth = 200;
+
+        // Platform patterns for varied generation
+        const platformPatterns = [
+            // Simple stair pattern
+            function(baseY) {
+                const platforms = [];
+                const count = Utility.random(3, 5);
+                let x = Utility.random(0, Game.canvas.width - platformMinWidth);
+
+                for (let i = 0; i < count; i++) {
+                    const width = Utility.random(platformMinWidth, platformMaxWidth);
+                    platforms.push({
+                        x: x,
+                        y: baseY - (i * 120),
+                        width: width,
+                        height: 20,
+                        color: '#8B4513', // SaddleBrown
+                        oneWay: true
+                    });
+
+                    // Shift x for next platform (for stair effect)
+                    x += Utility.random(-150, 150);
+                    if (x < 0) x = 0;
+                    if (x > Game.canvas.width - width) x = Game.canvas.width - width;
+                }
+
+                return platforms;
+            },
+
+            // Zigzag pattern
+            function(baseY) {
+                const platforms = [];
+                const count = Utility.random(3, 5);
+                let direction = Utility.random(0, 1) === 0 ? -1 : 1;
+                let x = direction === 1 ? 0 : Game.canvas.width - platformMinWidth;
+
+                for (let i = 0; i < count; i++) {
+                    const width = Utility.random(platformMinWidth, platformMaxWidth);
+                    platforms.push({
+                        x: x,
+                        y: baseY - (i * 120),
+                        width: width,
+                        height: 20,
+                        color: '#8B4513', // SaddleBrown
+                        oneWay: true
+                    });
+
+                    // Change direction
+                    direction *= -1;
+                    x = direction === 1 ? 0 : Game.canvas.width - width;
+                }
+
+                return platforms;
+            },
+
+            // Horizontal platforms
+            function(baseY) {
+                const platforms = [];
+                const count = Utility.random(3, 5);
+
+                for (let i = 0; i < count; i++) {
+                    const width = Utility.random(platformMinWidth, platformMaxWidth);
+                    const x = Utility.random(0, Game.canvas.width - width);
+                    platforms.push({
+                        x: x,
+                        y: baseY - (i * 120),
+                        width: width,
+                        height: 20,
+                        color: '#8B4513', // SaddleBrown
+                        oneWay: true
+                    });
+                }
+
+                return platforms;
+            },
+
+            // Centered ladder
+            function(baseY) {
+                const platforms = [];
+                const count = Utility.random(3, 5);
+                const centerX = Game.canvas.width / 2;
+
+                for (let i = 0; i < count; i++) {
+                    const width = Utility.random(platformMinWidth, platformMaxWidth);
+                    platforms.push({
+                        x: centerX - (width / 2),
+                        y: baseY - (i * 100),
+                        width: width,
+                        height: 20,
+                        color: '#8B4513', // SaddleBrown
+                        oneWay: true
+                    });
+                }
+
+                return platforms;
+            }
+        ];
+
+        return {
+            // Initialize platform generator
+            init: function() {
+                // Track highest platform and last generated position
+                highestPlatform = Game.canvas.height;
+                lastGeneratedY = Game.canvas.height;
+
+                // Make these properties accessible from outside
+                this.highestPlatform = highestPlatform;
+                this.lastGeneratedY = lastGeneratedY;
+            },
+
+            // Generate a random platform
+            generatePlatform: function(y) {
+                const width = Utility.random(platformMinWidth, platformMaxWidth);
+                const x = Utility.random(0, Game.canvas.width - width);
+
+                // Get current zone colors
+                const zoneColors = Game.zoneColors[Game.currentZone];
+
+                return {
+                    x: x,
+                    y: y,
+                    width: width,
+                    height: 20,
+                    color: zoneColors.platform,
+                    highlight: zoneColors.highlight,
+                    oneWay: true, // All platforms are one-way (can jump through from bottom)
+                    zone: Game.currentZone // Store which zone this platform belongs to
+                };
+            },
+
+            // Update platform generation
+            update: function() {
+                // Generate platforms if player is approaching the highest platform
+                // or if camera has moved up significantly
+                const bufferHeight = 1000; // Generate platforms this far above the camera - increased from 600 to generate more ahead
+
+                // If there are no platforms ahead or camera has moved up significantly
+                if (highestPlatform > Camera.y - bufferHeight || Camera.y < lastGeneratedY - 300) {
+                    // Choose a random platform pattern
+                    const patternFunc = platformPatterns[Utility.random(0, platformPatterns.length - 1)];
+
+                    // Generate new set of platforms using the pattern
+                    const newPlatforms = patternFunc(highestPlatform - 120);
+
+                    // Add the new platforms to the game
+                    Game.platforms = Game.platforms.concat(newPlatforms);
+
+                    // Update tracking variables
+                    highestPlatform = newPlatforms[newPlatforms.length - 1].y;
+                    lastGeneratedY = Camera.y;
+                }
+
+                // Remove platforms that are far below the camera view
+                const cleanupThreshold = Camera.y + Camera.height * 2; // Mantiene piattaforme per un'intera schermata sotto quella visibile
+                Game.platforms = Game.platforms.filter(platform => {
+                    return platform.y < cleanupThreshold || platform.isGround;
+                });
+
+                // Ensure ground platform is never removed
+                if (!Game.platforms.some(p => p.isGround)) {
+                    Game.platforms.push({
+                        x: 0,
+                        y: Game.canvas.height - 40,
+                        width: Game.canvas.width,
+                        height: 40,
+                        color: '#8B4513', // SaddleBrown
+                        isGround: true,
+                        oneWay: false // Ground is not one-way
+                    });
+                }
+            },
+
+            // Check if a new platform can be placed without creating impossible jumps
+            validatePlatformPlacement: function(platform, existingPlatforms) {
+                // Ensure platform is within screen bounds
+                if (platform.x < 0 || platform.x + platform.width > Game.canvas.width) {
+                    return false;
+                }
+
+                // Check if too close to other platforms
+                for (let other of existingPlatforms) {
+                    const horizontalOverlap = !(
+                        platform.x + platform.width < other.x ||
+                        platform.x > other.x + other.width
+                    );
+
+                    const closeVertically = Math.abs(platform.y - other.y) < 30;
+
+                    if (horizontalOverlap && closeVertically) {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+        };
+    })();
+    /* ===== PLATFORM_GENERATOR.JS - END ===== */
+
+    /* ===== GAME.JS - START ===== */
+    // Main game module
+    const Game = (function() {
+        // Game state
+        return {
+            canvas: null,
+            ctx: null,
+            entities: [],
+            platforms: [],
+            lives: 3,
+            gameOver: false,
+            score: 0,
+            highestY: 0,
+            enemiesKilled: 0,
+            enemyPoints: 0,
+            highScore: 0,
+            highestEnemiesKilled: 0,
+            currentZone: 0, // 0 = foresta, 1 = acquatica, 2 = vulcanica, 3 = cielo
+            zoneChangeHeight: 3000, // Altezza in punti per cambiare zona
+            zoneColors: [
+                { // Foresta
+                    sky: ['#87CEEB', '#4682B4'], // Sky gradient (top, bottom)
+                    platform: '#8B4513', // Platform color
+                    highlight: '#A0522D' // Platform highlight
+                },
+                { // Acquatica
+                    sky: ['#1E90FF', '#00BFFF'],
+                    platform: '#5F9EA0',
+                    highlight: '#4682B4'
+                },
+                { // Vulcanica
+                    sky: ['#FF4500', '#FF8C00'],
+                    platform: '#8B0000',
+                    highlight: '#A52A2A'
+                },
+                { // Cielo
+                    sky: ['#191970', '#4169E1'],
+                    platform: '#B0C4DE',
+                    highlight: '#778899'
+                }
+            ],
+            zoneNames: ['Foresta', 'Acquatica', 'Vulcanica', 'Cielo'],
+            currentBoss: null,
+            bossPlatform: null,
+            bossDefeated: [false, false, false, false],
+            bossHeights: [],
+            preventProgress: false,
+
+            // Initialize the game
+            init: function() {
+                this.canvas = document.getElementById('gameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+
+                // Initialize input
+                Input.init(this.canvas);
+
+                // Initialize morse
+                Morse.init();
+
+                // Initialize platform generator
+                PlatformGenerator.init();
+
+                // Create initial platforms
+                this.createPlatforms();
+
+                // Add player to entities
+                this.entities.push(Player);
+
+                // Create initial enemies (just one for a gentler start)
+                this.entities.push(Enemies.createBasicEnemy(450, 300));
+
+                // Load high score from localStorage
+                this.loadHighScore();
+
+                // Hide instructions after 10 seconds
+                setTimeout(() => {
+                    const instructions = document.getElementById('instructions');
+                    if (instructions) {
+                        instructions.style.display = 'none';
+                    }
+                }, 10000);
+
+                // Start game loop
+                this.gameLoop();
+            },
+
+            // Load high score from localStorage
+            loadHighScore: function() {
+                try {
+                    if (typeof localStorage !== 'undefined' && localStorage.getItem('wizardMorseHighScore')) {
+                        this.highScore = parseInt(localStorage.getItem('wizardMorseHighScore')) || 0;
+                    }
+                    if (typeof localStorage !== 'undefined' && localStorage.getItem('wizardMorseEnemiesKilled')) {
+                        this.highestEnemiesKilled = parseInt(localStorage.getItem('wizardMorseEnemiesKilled')) || 0;
+                    }
+                } catch (e) {
+                    console.log('localStorage not available, scores will not persist between sessions');
+                    this.highScore = 0;
+                    this.highestEnemiesKilled = 0;
+                }
+            },
+
+            // Save high score to localStorage if current score is higher
+            saveHighScore: function() {
+                const totalScore = this.score + this.enemyPoints;
+                if (totalScore > this.highScore) {
+                    try {
+                        if (typeof localStorage !== 'undefined') {
+                            localStorage.setItem('wizardMorseHighScore', totalScore);
+                            localStorage.setItem('wizardMorseEnemiesKilled', this.enemiesKilled);
+                        }
+                    } catch (e) {
+                        console.log('localStorage not available, scores will not persist between sessions');
+                    }
+
+                    this.highScore = totalScore;
+                    this.highestEnemiesKilled = this.enemiesKilled;
+                    return true;
+                }
+                return false;
+            },
+
+            // Add points for killing an enemy
+            addEnemyPoints: function(enemy) {
+                this.enemiesKilled++;
+                // Add points equal to enemy's max health
+                this.enemyPoints += enemy.maxHealth;
+            },
+
+            // Create initial platforms
+            createPlatforms: function() {
+                // Get colors for the initial zone (foresta)
+                const zoneColors = this.zoneColors[0];
+
+                // Ground
+                this.platforms.push({
+                    x: 0,
+                    y: this.canvas.height - 40,
+                    width: this.canvas.width,
+                    height: 40,
+                    color: zoneColors.platform,
+                    highlight: zoneColors.highlight,
+                    isGround: true,
+                    oneWay: false, // Ground is not one-way
+                    zone: 0
+                });
+
+                // Initial platforms
+                const platformPositions = [
+                    { x: 100, y: 400, width: 200, height: 20 },
+                    { x: 400, y: 350, width: 150, height: 20 },
+                    { x: 200, y: 250, width: 100, height: 20 },
+                    { x: 500, y: 200, width: 200, height: 20 },
+                    { x: 650, y: 300, width: 100, height: 20 }
+                ];
+
+                platformPositions.forEach(platform => {
+                    this.platforms.push({
+                        ...platform,
+                        color: zoneColors.platform,
+                        highlight: zoneColors.highlight,
+                        oneWay: true, // Initial platforms are one-way
+                        zone: 0
+                    });
+                });
+            },
+
+            // Display morse letter
+            displayMorseLetter: function(letter) {
+                // Create letter display entity
+                this.entities.push({
+                    type: 'letter',
+                    x: Player.x + (Player.facingDirection > 0 ? Player.width : -20),
+                    y: Player.y + Player.height / 3,
+                    letter: letter,
+                    lifespan: 90, // frames
+
+                    update: function() {
+                        // Follow player
+                        this.x = Player.x + (Player.facingDirection > 0 ? Player.width : -20);
+                        this.y = Player.y + Player.height / 3;
+
+                        // Reduce lifespan
+                        this.lifespan--;
+                        if (this.lifespan <= 0) {
+                            const index = Game.entities.indexOf(this);
+                            if (index !== -1) Game.entities.splice(index, 1);
+                        }
+                    },
+
+                    draw: function(ctx) {
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+                        ctx.fillStyle = 'white';
+                        ctx.font = 'bold 24px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(this.letter, screenPos.x, screenPos.y);
+                    }
+                });
+            },
+
+            // Display morse spell (special effect for spells)
+            displayMorseSpell: function(spell, letter) {
+                // Create spell display entity
+                this.entities.push({
+                    type: 'spell-text',
+                    x: Player.x + (Player.facingDirection > 0 ? Player.width + 20 : -40),
+                    y: Player.y - 20,
+                    spell: spell,
+                    letter: letter,
+                    scale: 1,
+                    growing: true,
+                    lifespan: 120, // frames
+
+                    update: function() {
+                        // Follow player
+                        this.x = Player.x + (Player.facingDirection > 0 ? Player.width + 20 : -40);
+                        this.y = Player.y - 20;
+
+                        // Pulsate effect
+                        if (this.growing) {
+                            this.scale += 0.03;
+                            if (this.scale >= 1.3) this.growing = false;
+                        } else {
+                            this.scale -= 0.03;
+                            if (this.scale <= 0.9) this.growing = true;
+                        }
+
+                        // Reduce lifespan
+                        this.lifespan--;
+                        if (this.lifespan <= 0) {
+                            const index = Game.entities.indexOf(this);
+                            if (index !== -1) Game.entities.splice(index, 1);
+                        }
+                    },
+
+                    draw: function(ctx) {
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+
+                        // Draw a colorful aura
+                        ctx.save();
+                        ctx.translate(screenPos.x, screenPos.y);
+                        ctx.scale(this.scale, this.scale);
+
+                        // Gradient for spell text
+                        const gradient = ctx.createLinearGradient(-50, -15, 50, 15);
+                        gradient.addColorStop(0, '#00FFFF');  // Cyan
+                        gradient.addColorStop(0.5, '#FF00FF'); // Magenta
+                        gradient.addColorStop(1, '#00FFFF');  // Cyan
+
+                        ctx.fillStyle = gradient;
+                        ctx.font = 'bold 26px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(this.spell, 0, 0);
+
+                        // Small letter indicator
+                        ctx.fillStyle = 'white';
+                        ctx.font = '14px Arial';
+                        ctx.fillText(`(${this.letter})`, 0, 20);
+
+                        ctx.restore();
+                    }
+                });
+            },
+
+            // Spawn an owl
+            spawnOwl: function() {
+                this.entities.push(Owl.create(Camera.x - 50, Camera.y + 100));
+            },
+
+            // Update enemies - spawn new ones and remove those out of bounds
+            updateEnemies: function() {
+                // Clean up enemies that are far below the camera view
+                this.entities = this.entities.filter(entity => {
+                    if (entity.type === 'enemy') {
+                        // Remove enemies that are more than a screen height below the camera
+                        if (entity.y > Camera.y + Camera.height * 2) {
+                            return false;
+                        }
+                    }
+                    return true;
+                });
+
+                // Count current active enemies
+                const activeEnemies = this.entities.filter(entity => entity.type === 'enemy');
+
+                // Only generate new enemies if we have less than 5
+                if (activeEnemies.length < 5) {
+                    // Calculate altitude-based spawn probability
+                    // Higher altitude = more enemies
+                    // This is based on the player's score which increases with altitude
+                    const baseSpawnChance = 0.005; // Very low base chance (~1/200 per frame)
+                    const altitudeBonus = this.score / 5000; // Gradual increase as player climbs
+                    const spawnChance = Math.min(0.025, baseSpawnChance + altitudeBonus); // Cap at 0.025 (1/40 per frame)
+
+                    // Spawn based on calculated probability
+                    if (Math.random() < spawnChance) {
+                        // Decide on enemy type - ensure a good mix
+                        let flyingEnemiesCount = activeEnemies.filter(e => e.behavior === 'fly').length;
+                        let groundEnemiesCount = activeEnemies.length - flyingEnemiesCount;
+
+                        // If we have more flying than ground enemies, favor ground enemies
+                        const favorGroundEnemies = flyingEnemiesCount > groundEnemiesCount;
+                        // Weighted random selection based on current distribution
+                        const isFlying = favorGroundEnemies ? Math.random() < 0.3 : Math.random() < 0.5;
+
+                        // Choose spawn position
+                        let enemyX, enemyY;
+
+                        if (isFlying) {
+                            // Flying enemies can spawn at the sides of the screen
+                            const spawnLeft = Math.random() < 0.5;
+
+                            if (spawnLeft) {
+                                enemyX = Camera.x - 50; // Just outside left edge
+                            } else {
+                                enemyX = Camera.x + Camera.width + 50; // Just outside right edge
+                            }
+
+                            // Random height within the visible screen
+                            enemyY = Camera.y + Math.random() * (Camera.height * 0.7);
+
+                            // Create flying enemy
+                            this.entities.push(Enemies.createFlyingEnemy(enemyX, enemyY));
+                        } else {
+                            // Ground enemies spawn on platforms
+                            // First, collect suitable platforms
+                            const suitablePlatforms = this.platforms.filter(platform => {
+                                // Platform must be visible or just above/below screen
+                                return platform.y >= Camera.y - 200 &&
+                                       platform.y <= Camera.y + Camera.height + 100;
+                            });
+
+                            if (suitablePlatforms.length > 0) {
+                                // Choose a random platform, with preference for platforms closer to the player
+                                const platform = this.choosePlatformForEnemy(suitablePlatforms);
+
+                                // Position on the platform
+                                enemyX = platform.x + Math.random() * (platform.width - 40);
+                                enemyY = platform.y - 40;
+
+                                // Create basic enemy
+                                const enemy = Enemies.createBasicEnemy(enemyX, enemyY);
+                                enemy.startX = enemyX; // Set patrol start position
+                                this.entities.push(enemy);
+                            }
+                        }
+                    }
+                }
+            },
+
+            // Helper method to choose a good platform for enemy spawn
+            choosePlatformForEnemy: function(platforms) {
+                // First check if there are any platforms above the player
+                const platformsAbovePlayer = platforms.filter(p => p.y < Player.y);
+
+                // If we have platforms above, 70% chance to spawn there
+                if (platformsAbovePlayer.length > 0 && Math.random() < 0.7) {
+                    return platformsAbovePlayer[Math.floor(Math.random() * platformsAbovePlayer.length)];
+                }
+
+                // Otherwise, choose from any suitable platform
+                return platforms[Math.floor(Math.random() * platforms.length)];
+            },
+
+            // Handle player death
+            // Update and check for zone changes
+            updateZone: function() {
+                // Calculate the zone based on score
+                const newZone = Math.min(3, Math.floor(this.score / this.zoneChangeHeight));
+
+                // If zone has changed, show notification
+                if (newZone !== this.currentZone) {
+                    this.currentZone = newZone;
+
+                    // Show zone change notification
+                    this.entities.push({
+                        type: 'notification',
+                        x: this.canvas.width / 2,
+                        y: Camera.y + 100,
+                        text: `Zona ${this.zoneNames[this.currentZone]}`,
+                        lifespan: 180, // 3 seconds at 60 FPS
+                        update: function() {
+                            this.y = Camera.y + 100; // Stay at fixed position on screen
+                            this.lifespan--;
+                            if (this.lifespan <= 0) {
+                                const index = Game.entities.indexOf(this);
+                                if (index !== -1) Game.entities.splice(index, 1);
+                            }
+                        },
+                        draw: function(ctx) {
+                            const screenPos = {x: this.x, y: this.y}; // Already in screen coords
+                            ctx.fillStyle = 'white';
+                            ctx.strokeStyle = 'black';
+                            ctx.lineWidth = 3;
+                            ctx.font = 'bold 32px Arial';
+                            ctx.textAlign = 'center';
+                            ctx.strokeText(this.text, screenPos.x, screenPos.y);
+                            ctx.fillText(this.text, screenPos.x, screenPos.y);
+                        }
+                    });
+                }
+            },
+
+            playerDeath: function() {
+                this.lives--;
+
+                if (this.lives <= 0) {
+                    this.gameOver = true;
+
+                    // Save high score if it's a new record
+                    const isNewRecord = this.saveHighScore();
+
+                    if (isNewRecord) {
+                        console.log("New High Score: " + (this.score + this.enemyPoints));
+                    }
+
+                    console.log("Game Over!");
+                } else {
+                    // Reset player health
+                    Player.health = Player.maxHealth;
+
+                    // Provide temporary invulnerability
+                    Player.invulnerable = 120; // 2 seconds of invulnerability
+
+                    // Store player's death position
+                    const deathX = Player.x;
+                    const deathY = Player.y;
+
+                    // Reset player velocity
+                    Player.velocityX = 0;
+                    Player.velocityY = 0;
+
+                    // Find the closest platform to where the player died
+                    let closestPlatform = null;
+                    let closestDistance = Infinity;
+
+                    for (let platform of this.platforms) {
+                        // Check if platform is within reasonable range of death position
+                        const dx = (platform.x + platform.width/2) - deathX;
+                        const dy = platform.y - deathY;
+                        const distance = Math.sqrt(dx*dx + dy*dy);
+
+                        // Only consider platforms below or at the same height as death position
+                        if (platform.y >= deathY - 100 && distance < closestDistance) {
+                            closestPlatform = platform;
+                            closestDistance = distance;
+                        }
+                    }
+
+                    if (closestPlatform) {
+                        // Position player on the platform
+                        Player.x = closestPlatform.x + closestPlatform.width / 2 - Player.width / 2;
+                        Player.y = closestPlatform.y - Player.height;
+                    } else {
+                        // Fallback - just reset to middle of screen if no platforms found
+                        // This should rarely happen with increased platform retention
+                        Player.x = Camera.x + Camera.width/2;
+                        Player.y = Camera.y + Camera.height/2;
+                    }
+
+                    // Create a respawn notification
+                    this.entities.push({
+                        type: 'notification',
+                        x: Player.x,
+                        y: Player.y - 40,
+                        text: `Vita persa! Vite rimaste: ${this.lives}`,
+                        lifespan: 120,
+                        update: function() {
+                            this.y -= 1;
+                            this.lifespan--;
+                            if (this.lifespan <= 0) {
+                                const index = Game.entities.indexOf(this);
+                                if (index !== -1) Game.entities.splice(index, 1);
+                            }
+                        },
+                        draw: function(ctx) {
+                            const screenPos = Camera.worldToScreen(this.x, this.y);
+                            ctx.fillStyle = 'red';
+                            ctx.font = 'bold 20px Arial';
+                            ctx.textAlign = 'center';
+                            ctx.fillText(this.text, screenPos.x, screenPos.y);
+                        }
+                    });
+                }
+            },
+
+            // Check if player is out of bounds
+            checkPlayerBounds: function() {
+                // Check if player fell below camera view
+                if (Player.y > Camera.y + Camera.height + Player.height * 2) {
+                    this.playerDeath();
+                    // Move player to safe position after death
+                    return;
+                }
+
+                // Update highest Y position reached (for score)
+                if (Player.y < this.highestY) {
+                    this.highestY = Player.y;
+                    this.score = Math.floor((this.canvas.height - this.highestY) / 10);
+
+                    // Check for zone change
+                    this.updateZone();
+                }
+            },
+
+            // Main game loop
+            gameLoop: function() {
+                if (this.gameOver) {
+                    // Draw game over screen
+                    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                    this.ctx.fillStyle = 'white';
+                    this.ctx.font = 'bold 48px Arial';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillText('GAME OVER', this.canvas.width / 2, this.canvas.height / 2 - 80);
+
+                    // Calculate total score
+                    const totalScore = this.score + this.enemyPoints;
+
+                    // Show current score details
+                    this.ctx.font = 'bold 24px Arial';
+                    this.ctx.fillText(`Height Score: ${this.score}`, this.canvas.width / 2, this.canvas.height / 2 - 20);
+                    this.ctx.fillText(`Enemy Points: ${this.enemyPoints}`, this.canvas.width / 2, this.canvas.height / 2 + 10);
+                    this.ctx.fillText(`Enemies Killed: ${this.enemiesKilled}`, this.canvas.width / 2, this.canvas.height / 2 + 40);
+                    this.ctx.fillText(`Total Score: ${totalScore}`, this.canvas.width / 2, this.canvas.height / 2 + 70);
+
+                    // Draw a line to separate current score from high score
+                    this.ctx.strokeStyle = 'white';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(this.canvas.width/2 - 150, this.canvas.height/2 + 90);
+                    this.ctx.lineTo(this.canvas.width/2 + 150, this.canvas.height/2 + 90);
+                    this.ctx.stroke();
+
+                    // Show high score
+                    this.ctx.fillStyle = '#FFD700'; // Gold color for high score
+                    this.ctx.fillText(`High Score: ${this.highScore}`, this.canvas.width / 2, this.canvas.height / 2 + 120);
+                    this.ctx.fillText(`Most Enemies: ${this.highestEnemiesKilled}`, this.canvas.width / 2, this.canvas.height / 2 + 150);
+
+                    // Restart instruction
+                    this.ctx.fillStyle = 'white';
+                    this.ctx.fillText('Press R to restart', this.canvas.width / 2, this.canvas.height / 2 + 200);
+
+                    // Check for restart
+                    if (Input.isKeyDown('r')) {
+                        // Reset boss state
+                        this.bossDefeated = [false, false, false, false];
+                        this.bossPlatform = null;
+                        this.currentBoss = null;
+                        this.preventProgress = false;
+
+                        location.reload();
+                    }
+
+                    requestAnimationFrame(() => this.gameLoop());
+                    return;
+                }
+
+                // Update platform generation
+                PlatformGenerator.update();
+
+                // Handle enemy spawning and cleanup
+                this.updateEnemies();
+
+                // Update player
+                Player.update();
+                Player.checkPlatformCollisions();
+
+                // Update camera position to follow player
+                Camera.update();
+
+                // Check if player is out of bounds
+                this.checkPlayerBounds();
+
+                // Check for boss encounters
+                this.checkBossEncounter();
+
+                // Update all other entities
+                for (let i = this.entities.length - 1; i >= 0; i--) {
+                    const entity = this.entities[i];
+                    if (entity !== Player && entity.update) {
+                        entity.update();
+                    }
+                }
+
+                // Clear canvas
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // Get current zone colors for sky
+                const zoneColors = this.zoneColors[this.currentZone];
+
+                // Draw sky background with gradient based on zone
+                const gradient = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
+                gradient.addColorStop(0, zoneColors.sky[0]); // Top color
+                gradient.addColorStop(1, zoneColors.sky[1]); // Bottom color
+                this.ctx.fillStyle = gradient;
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // Draw platforms (with camera offset)
+                this.platforms.forEach(platform => {
+                    const screenPos = Camera.worldToScreen(platform.x, platform.y);
+                    if (screenPos.y < this.canvas.height &&
+                        screenPos.y + platform.height > 0 &&
+                        screenPos.x < this.canvas.width &&
+                        screenPos.x + platform.width > 0) {
+
+                        // Get platform colors - either from platform or current zone
+                        const platformZone = platform.zone !== undefined ? platform.zone : this.currentZone;
+                        const platformColors = this.zoneColors[platformZone];
+
+                        // Draw platform base
+                        this.ctx.fillStyle = platform.color || platformColors.platform;
+                        this.ctx.fillRect(screenPos.x, screenPos.y, platform.width, platform.height);
+
+                        // Draw platform top edge highlight for one-way platforms
+                        if (platform.oneWay) {
+                            this.ctx.fillStyle = platform.highlight || platformColors.highlight;
+                            this.ctx.fillRect(screenPos.x, screenPos.y, platform.width, 3);
+
+                            // Draw small arrows on top to indicate one-way
+                            this.ctx.fillStyle = '#FFD700'; // Gold
+                            const arrowCount = Math.floor(platform.width / 40);
+                            for (let i = 0; i < arrowCount; i++) {
+                                const arrowX = screenPos.x + (platform.width / (arrowCount + 1)) * (i + 1);
+
+                                // Draw arrow
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(arrowX, screenPos.y - 5);
+                                this.ctx.lineTo(arrowX - 5, screenPos.y);
+                                this.ctx.lineTo(arrowX + 5, screenPos.y);
+                                this.ctx.fill();
+                            }
+                        }
+                    }
+                });
+
+                // Draw all entities (with camera offset)
+                this.entities.forEach(entity => {
+                    if (entity.draw) {
+                        entity.draw(this.ctx);
+                    }
+                });
+
+                // Draw UI elements
+                this.drawUI();
+
+                // Request next frame
+                requestAnimationFrame(() => this.gameLoop());
+            },
+
+            // Draw UI elements (score, lives)
+            drawUI: function() {
+                // Draw score
+                this.ctx.fillStyle = 'white';
+                this.ctx.font = 'bold 24px Arial';
+                this.ctx.textAlign = 'left';
+                this.ctx.fillText(`Score: ${this.score}`, 20, 30);
+
+                // Draw enemy points
+                this.ctx.fillStyle = '#FFA500'; // Orange
+                this.ctx.textAlign = 'left';
+                this.ctx.fillText(`Enemy Points: ${this.enemyPoints}`, 20, 60);
+
+                // Draw total score
+                this.ctx.fillStyle = '#FFFF00'; // Yellow
+                this.ctx.textAlign = 'left';
+                this.ctx.fillText(`Total: ${this.score + this.enemyPoints}`, 20, 90);
+
+                // Draw lives
+                this.ctx.fillStyle = 'white';
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText(`Lives: ${this.lives}`, this.canvas.width - 20, 30);
+
+                // Draw enemies killed
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText(`Killed: ${this.enemiesKilled}`, this.canvas.width - 20, 60);
+
+                // Draw current zone info
+                this.ctx.textAlign = 'center';
+                this.ctx.fillStyle = '#FFFF00'; // Yellow
+                this.ctx.fillText(`Zona: ${this.zoneNames[this.currentZone]}`, this.canvas.width / 2, 30);
+
+                // Draw progress to next zone if not in final zone
+                if (this.currentZone < 3) {
+                    const nextZoneScore = (this.currentZone + 1) * this.zoneChangeHeight;
+                    const progress = Math.min(1, (this.score - (this.currentZone * this.zoneChangeHeight)) / this.zoneChangeHeight);
+
+                    // Draw progress bar background
+                    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                    this.ctx.fillRect(this.canvas.width / 2 - 100, 45, 200, 10);
+
+                    // Draw progress
+                    this.ctx.fillStyle = '#FFFF00'; // Yellow
+                    this.ctx.fillRect(this.canvas.width / 2 - 100, 45, 200 * progress, 10);
+
+                    // Draw text for next zone
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillStyle = '#FFFFFF'; // White
+                    this.ctx.font = 'bold 12px Arial';
+                    this.ctx.fillText(`${Math.floor(progress * 100)}% → ${this.zoneNames[this.currentZone + 1]}`, this.canvas.width / 2, 65);
+                }
+            },
+
+            // Crea un boss per la zona corrente
+            createBoss: function(zoneIndex) {
+                // Se il boss è già stato sconfitto, salta
+                if (this.bossDefeated[zoneIndex]) return null;
+
+                const bossTypes = [
+                    { name: 'Boss Foresta', health: 300, width: 100, height: 100, color: '#006400' },
+                    { name: 'Boss Acquatico', health: 400, width: 120, height: 80, color: '#00008B' },
+                    { name: 'Boss Vulcanico', health: 500, width: 100, height: 110, color: '#8B0000' },
+                    { name: 'Boss Celeste', health: 600, width: 130, height: 90, color: '#4B0082' }
+                ];
+
+                const bossType = bossTypes[zoneIndex];
+                const platformY = this.bossHeights[zoneIndex];
+
+                return {
+                    type: 'boss',
+                    name: bossType.name,
+                    x: this.canvas.width / 2 - bossType.width / 2,
+                    y: platformY - bossType.height - 10,
+                    width: bossType.width,
+                    height: bossType.height,
+                    health: bossType.health,
+                    maxHealth: bossType.health,
+                    color: bossType.color,
+                    zone: zoneIndex,
+                    attackCooldown: 0,
+                    maxAttackCooldown: 90 - zoneIndex * 10, // Boss più veloci nelle zone superiori
+                    direction: 1,
+                    defeated: false,
+                    defeatTimer: 0,
+
+                    update: function() {
+                        if (this.defeated) {
+                            this.defeatTimer++;
+                            if (this.defeatTimer > 180) { // 3 secondi di animazione sconfitta
+                                const index = Game.entities.indexOf(this);
+                                if (index !== -1) Game.entities.splice(index, 1);
+                                Game.bossDefeated[this.zone] = true;
+                                Game.preventProgress = false;
+
+                                // Creare notifica di vittoria
+                                Game.entities.push({
+                                    type: 'notification',
+                                    x: this.x,
+                                    y: this.y - 40,
+                                    text: `${this.name} SCONFITTO!`,
+                                    lifespan: 180,
+                                    update: function() {
+                                        this.y -= 1;
+                                        this.lifespan--;
+                                        if (this.lifespan <= 0) {
+                                            const index = Game.entities.indexOf(this);
+                                            if (index !== -1) Game.entities.splice(index, 1);
+                                        }
+                                    },
+                                    draw: function(ctx) {
+                                        const screenPos = Camera.worldToScreen(this.x, this.y);
+                                        ctx.fillStyle = '#FFFF00';
+                                        ctx.font = 'bold 24px Arial';
+                                        ctx.textAlign = 'center';
+                                        ctx.fillText(this.text, screenPos.x, screenPos.y);
+                                    }
+                                });
+                            }
+                            return;
+                        }
+
+                        // Movimento di base
+                        if (this.attackCooldown <= 0) {
+                            // Pattern di movimento base del boss
+                            this.x += 2 * this.direction;
+
+                            // Cambia direzione ai bordi della piattaforma
+                            if (this.x <= Game.bossPlatform.x + 10) {
+                                this.direction = 1;
+                            } else if (this.x + this.width >= Game.bossPlatform.x + Game.bossPlatform.width - 10) {
+                                this.direction = -1;
+                            }
+
+                            // Attacchi di base
+                            if (Math.random() < 0.01) {
+                                this.basicAttack();
+                                this.attackCooldown = this.maxAttackCooldown;
+                            }
+                        } else {
+                            this.attackCooldown--;
+                        }
+
+                        // Collisione con il giocatore
+                        if (Utility.checkCollision(this, Player) && Player.invulnerable <= 0) {
+                            Player.health -= 1;
+
+                            // Knockback
+                            const knockbackDirection = Player.x < this.x ? -1 : 1;
+                            Player.velocityX = knockbackDirection * 8;
+                            Player.velocityY = -8;
+
+                            Player.invulnerable = 60;
+                        }
+
+                        // Controlla danni da proiettili del giocatore
+                        Game.entities.forEach(entity => {
+                            if (entity.type === 'spell' && Utility.checkCollision(this, entity)) {
+                                this.health -= entity.damage;
+                                entity.lifespan = 0;
+
+                                // Effetto di danno
+                                Game.entities.push({
+                                    type: 'particle',
+                                    x: entity.x,
+                                    y: entity.y,
+                                    size: 20,
+                                    color: '#FFFFFF',
+                                    lifespan: 15,
+                                    update: function() {
+                                        this.size *= 0.9;
+                                        this.lifespan--;
+                                        if (this.lifespan <= 0) {
+                                            const index = Game.entities.indexOf(this);
+                                            if (index !== -1) Game.entities.splice(index, 1);
+                                        }
+                                    },
+                                    draw: function(ctx) {
+                                        const screenPos = Camera.worldToScreen(this.x, this.y);
+                                        ctx.fillStyle = this.color;
+                                        ctx.beginPath();
+                                        ctx.arc(screenPos.x, screenPos.y, this.size, 0, Math.PI*2);
+                                        ctx.fill();
+                                    }
+                                });
+                            }
+                        });
+
+                        // Boss sconfitto
+                        if (this.health <= 0 && !this.defeated) {
+                            this.defeated = true;
+                            this.defeatTimer = 0;
+                        }
+                    },
+
+                    basicAttack: function() {
+                        // Attacco base a seconda della zona del boss
+                        switch (this.zone) {
+                            case 0: // Boss Foresta - proiettili diretti
+                                for (let i = -1; i <= 1; i++) {
+                                    const angle = Math.PI/2 + (Math.PI/4 * i);
+                                    this.fireProjectile(angle);
+                                }
+                                break;
+
+                            case 1: // Boss Acquatico - proiettili oscillanti
+                                for (let i = 0; i < 3; i++) {
+                                    setTimeout(() => {
+                                        const angle = Math.atan2(Player.y - this.y, Player.x - this.x);
+                                        this.fireProjectile(angle);
+                                    }, i * 200);
+                                }
+                                break;
+
+                            case 2: // Boss Vulcanico - esplosioni
+                                const targetX = Player.x;
+                                const targetY = Player.y;
+
+                                setTimeout(() => {
+                                    Game.entities.push({
+                                        type: 'projectile',
+                                        x: targetX - 25,
+                                        y: targetY - 25,
+                                        width: 50,
+                                        height: 50,
+                                        damage: 15,
+                                        lifespan: 30,
+                                        color: '#FF4500',
+                                        update: function() {
+                                            this.lifespan--;
+
+                                            if (Utility.checkCollision(this, Player) && Player.invulnerable <= 0) {
+                                                Player.health -= this.damage;
+                                                Player.invulnerable = 30;
+                                            }
+
+                                            if (this.lifespan <= 0) {
+                                                const index = Game.entities.indexOf(this);
+                                                if (index !== -1) Game.entities.splice(index, 1);
+                                            }
+                                        },
+                                        draw: function(ctx) {
+                                            const screenPos = Camera.worldToScreen(this.x, this.y);
+                                            ctx.fillStyle = this.color;
+                                            ctx.beginPath();
+                                            ctx.arc(screenPos.x + this.width/2, screenPos.y + this.height/2, this.width/2 * (1 - this.lifespan/30), 0, Math.PI*2);
+                                            ctx.fill();
+                                        }
+                                    });
+                                }, 1000); // Ritardo per avviso
+                                break;
+
+                            case 3: // Boss Celeste - raggi multipli
+                                for (let i = 0; i < 6; i++) {
+                                    const angle = (Math.PI*2 / 6) * i;
+                                    this.fireProjectile(angle);
+                                }
+                                break;
+                        }
+                    },
+
+                    fireProjectile: function(angle) {
+                        const speed = 6 + this.zone; // Più veloce nelle zone superiori
+                        const colors = ['#32CD32', '#1E90FF', '#FF4500', '#9370DB'];
+
+                        Game.entities.push({
+                            type: 'projectile',
+                            x: this.x + this.width/2,
+                            y: this.y + this.height/2,
+                            width: 20,
+                            height: 20,
+                            velocityX: Math.cos(angle) * speed,
+                            velocityY: Math.sin(angle) * speed,
+                            damage: 10 + this.zone * 3,
+                            lifespan: 120,
+                            color: colors[this.zone],
+                            update: function() {
+                                this.x += this.velocityX;
+                                this.y += this.velocityY;
+                                this.lifespan--;
+
+                                if (Utility.checkCollision(this, Player) && Player.invulnerable <= 0) {
+                                    Player.health -= this.damage;
+                                    Player.invulnerable = 30;
+                                    this.lifespan = 0;
+                                }
+
+                                if (this.lifespan <= 0) {
+                                    const index = Game.entities.indexOf(this);
+                                    if (index !== -1) Game.entities.splice(index, 1);
+                                }
+                            },
+                            draw: function(ctx) {
+                                const screenPos = Camera.worldToScreen(this.x, this.y);
+                                ctx.fillStyle = this.color;
+                                ctx.beginPath();
+                                ctx.arc(screenPos.x + this.width/2, screenPos.y + this.height/2, this.width/2, 0, Math.PI*2);
+                                ctx.fill();
+                            }
+                        });
+                    },
+
+                    draw: function(ctx) {
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+
+                        // Salta il disegno se non visibile sullo schermo
+                        if (!Camera.isVisible(this)) {
+                            return;
+                        }
+
+                        // Sconfitta: effetto di dissoluzione
+                        if (this.defeated) {
+                            ctx.globalAlpha = 1 - (this.defeatTimer / 180);
+                        }
+
+                        // Disegna corpo del boss
+                        ctx.fillStyle = this.color;
+                        ctx.fillRect(screenPos.x, screenPos.y, this.width, this.height);
+
+                        // Disegna dettagli boss (diverse per ogni zona)
+                        switch (this.zone) {
+                            case 0: // Foresta
+                                ctx.fillStyle = '#228B22';
+                                ctx.fillRect(screenPos.x + this.width/4, screenPos.y, this.width/2, this.height/4);
+                                break;
+                            case 1: // Acquatico
+                                ctx.fillStyle = '#1E90FF';
+                                ctx.beginPath();
+                                ctx.arc(screenPos.x + this.width/2, screenPos.y + this.height/2, this.width/4, 0, Math.PI*2);
+                                ctx.fill();
+                                break;
+                            case 2: // Vulcanico
+                                ctx.fillStyle = '#FF4500';
+                                ctx.beginPath();
+                                ctx.moveTo(screenPos.x + this.width/2, screenPos.y);
+                                ctx.lineTo(screenPos.x, screenPos.y + this.height);
+                                ctx.lineTo(screenPos.x + this.width, screenPos.y + this.height);
+                                ctx.fill();
+                                break;
+                            case 3: // Celeste
+                                ctx.fillStyle = '#9370DB';
+                                ctx.beginPath();
+                                ctx.arc(screenPos.x + this.width/4, screenPos.y + this.height/4, this.width/6, 0, Math.PI*2);
+                                ctx.arc(screenPos.x + this.width*3/4, screenPos.y + this.height/4, this.width/6, 0, Math.PI*2);
+                                ctx.fill();
+                                break;
+                        }
+
+                        // Disegna barra della salute
+                        ctx.fillStyle = 'red';
+                        ctx.fillRect(screenPos.x, screenPos.y - 15, this.width, 10);
+
+                        ctx.fillStyle = 'green';
+                        ctx.fillRect(screenPos.x, screenPos.y - 15, (this.health / this.maxHealth) * this.width, 10);
+
+                        // Nome del boss
+                        ctx.fillStyle = 'white';
+                        ctx.font = 'bold 16px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(this.name, screenPos.x + this.width/2, screenPos.y - 25);
+
+                        ctx.globalAlpha = 1; // Resetta alpha
+                    }
+                };
+            },
+
+            // Crea piattaforma del boss e blocco di progressione
+            createBossPlatform: function(zoneIndex) {
+                const platformY = this.bossHeights[zoneIndex];
+                const platformWidth = this.canvas.width;
+                const platformHeight = 40;
+
+                const zoneColors = this.zoneColors[zoneIndex];
+
+                // Piattaforma boss
+                this.bossPlatform = {
+                    x: 0,
+                    y: platformY,
+                    width: platformWidth,
+                    height: platformHeight,
+                    color: zoneColors.platform,
+                    highlight: zoneColors.highlight,
+                    isBossPlatform: true,
+                    oneWay: false,
+                    zone: zoneIndex
+                };
+
+                this.platforms.push(this.bossPlatform);
+
+                // Aggiungi il boss
+                this.currentBoss = this.createBoss(zoneIndex);
+                if (this.currentBoss) {
+                    this.entities.push(this.currentBoss);
+                    this.preventProgress = true;
+                }
+
+                // Aggiungi indicatore boss
+                Game.entities.push({
+                    type: 'notification',
+                    x: this.canvas.width / 2,
+                    y: platformY - 60,
+                    text: `ZONA BOSS ${this.zoneNames[zoneIndex].toUpperCase()}`,
+                    lifespan: 300,
+                    update: function() {
+                        this.lifespan--;
+                        if (this.lifespan <= 0) {
+                            const index = Game.entities.indexOf(this);
+                            if (index !== -1) Game.entities.splice(index, 1);
+                        }
+                    },
+                    draw: function(ctx) {
+                        const screenPos = Camera.worldToScreen(this.x, this.y);
+                        ctx.fillStyle = '#FFFF00';
+                        ctx.font = 'bold 24px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(this.text, screenPos.x, screenPos.y);
+                    }
+                });
+            },
+
+            // Controlla se il giocatore sta entrando in una zona boss
+            checkBossEncounter: function() {
+                // Nessun boss se siamo in tutorial o primo livello
+                if (this.score < 500) return;
+
+                // Calcola in quale zona ci troviamo
+                const zoneIndex = this.currentZone;
+
+                // Se non abbiamo ancora inizializzato le altezze dei boss
+                if (this.bossHeights.length === 0) {
+                    for (let i = 0; i < 4; i++) {
+                        this.bossHeights.push(Utility.calculateBossHeight(i));
+                    }
+                }
+
+                // Controlla se il giocatore sta entrando nella zona boss
+                const bossHeight = this.bossHeights[zoneIndex];
+
+                if (!this.bossPlatform && Player.y < bossHeight + 200 && Player.y > bossHeight) {
+                    this.createBossPlatform(zoneIndex);
+                }
+
+                // Limita la progressione verticale se il boss non è stato sconfitto
+                if (this.preventProgress && !this.bossDefeated[zoneIndex]) {
+                    const maxHeight = this.bossPlatform.y - this.canvas.height * 1.5;
+                    if (Player.y < maxHeight) {
+                        // Blocca il giocatore e mostra messaggio
+                        Player.y = maxHeight;
+                        Player.velocityY = 0;
+
+                        // Mostra messaggio barriera ogni 3 secondi
+                        if (Date.now() % 3000 < 20) {
+                            Game.entities.push({
+                                type: 'notification',
+                                x: Player.x,
+                                y: Player.y - 40,
+                                text: "Sconfiggi il boss per procedere!",
+                                lifespan: 90,
+                                update: function() {
+                                    this.lifespan--;
+                                    if (this.lifespan <= 0) {
+                                        const index = Game.entities.indexOf(this);
+                                        if (index !== -1) Game.entities.splice(index, 1);
+                                    }
+                                },
+                                draw: function(ctx) {
+                                    const screenPos = Camera.worldToScreen(this.x, this.y);
+                                    ctx.fillStyle = '#FF0000';
+                                    ctx.font = '18px Arial';
+                                    ctx.textAlign = 'center';
+                                    ctx.fillText(this.text, screenPos.x, screenPos.y);
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        };
+    })();
+    /* ===== GAME.JS - END ===== */
+
+    // Initialize game when DOM is ready
+    document.addEventListener('DOMContentLoaded', function() {
+        Game.init();
+    });
+</script>
+</body>
+</html>
